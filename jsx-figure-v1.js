@@ -41,7 +41,6 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
 
   var script = document.currentScript;
   var scriptSrc = script ? script.src : '';
-  var apiBase = (script && script.getAttribute('data-api')) || (scriptSrc ? new URL('/api/v1/jsx-figure', scriptSrc).href : '/api/v1/jsx-figure');
 
   // ------------------------------------------------------------------ nạp file kèm theo một lần (tự host, không dùng CDN)
   var loading = {};
@@ -486,43 +485,47 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     });
   }
 
-  function load(container, questionId, section) {
-    var id = section === 'explanation' ? questionId + ':explanation' : questionId;
-    injectCss();
-    return fetch(apiBase + '/render/' + encodeURIComponent(id), { headers: { Accept: 'application/json' } })
-      .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
-      .then(function (payload) { return mount(container, payload); }) // câu không có hình: false, để nguyên trang
-      .catch(function (err) {
-        container.innerHTML = '<div class="jsx-figure-note">Không tải được hình.</div>';
-        if (window.console) console.warn('[jsx-figure]', err);
-        return false;
-      });
+  // ------------------------------------------------------------------ bản gọn: dữ liệu nằm sẵn trong thẻ, không gọi API
+  // Đọc dữ liệu hình từ thẻ: data-figure (hoặc data) là JSON. Chấp nhận: { type, data } | khối render trần (có kind) |
+  // { render, figure } kèm attribute type | figure trần (cơ học, hình không gian) kèm attribute type.
+  function readFigure(el) {
+    var raw = el.getAttribute('data-figure') || el.getAttribute('data');
+    if (!raw) return null;
+    var d = JSON.parse(raw);
+    if (!d || typeof d !== 'object' || Array.isArray(d)) throw new TypeError('Dữ liệu hình phải là một object JSON.');
+    var type = el.getAttribute('type') || el.getAttribute('data-type');
+    if (d.type && d.data !== undefined && !d.geometryType) return normalize(d);
+    if (d.kind && !d.render) return { geometryType: d.kind, render: d, figure: null };
+    if (d.render || d.figure) { if (type) d.geometryType = type; return d; }
+    return type ? { geometryType: type, render: null, figure: d } : null;
   }
 
-  // Chỗ đặt hình: data-target, nếu không thì thay ảnh <img> đầu tiên (giữ ảnh gốc nếu không có hình), cuối cùng là sau thẻ script.
+  /** Vẽ hình vào phần tử (đọc dữ liệu từ chính phần tử đó). Kết quả: Promise<true> nếu vẽ được. Thẻ đã vẽ thì bỏ qua. */
+  function mountElement(el) {
+    if (!el || el.getAttribute('data-rendered')) return Promise.resolve(false);
+    var figure;
+    try { figure = readFigure(el); } catch (error) { return fail(el, error); }
+    if (!figure) return Promise.resolve(false);
+    el.setAttribute('data-rendered', 'pending');
+    return mount(el, figure).then(function (ok) {
+      el.setAttribute('data-rendered', ok ? 'ok' : 'empty');
+      return ok;
+    }, function (error) { return fail(el, error); });
+  }
+
+  function fail(el, error) {
+    el.setAttribute('data-rendered', 'error');
+    el.textContent = 'Dữ liệu hình minh họa không hợp lệ.';
+    if (window.console) console.error('[jsx-figure]', error);
+    return Promise.resolve(false);
+  }
+
+  // Tự vẽ mọi thẻ có sẵn dữ liệu khi trang sẵn sàng.
   function boot() {
-    Array.prototype.forEach.call(document.querySelectorAll('div.jsx-figure[data-question-id]'), function (el) {
-      load(el, el.getAttribute('data-question-id'), el.getAttribute('data-section'));
-    });
-    var qid = script && script.getAttribute('data-question-id');
-    if (!qid) return;
-    var section = script.getAttribute('data-section');
-    var selector = script.getAttribute('data-target');
-    var target = selector ? document.querySelector(selector) : null;
-    if (target) { load(target, qid, section); return; }
-    var holder = document.createElement('div');
-    var img = Array.prototype.filter.call(document.images, function (el) { return !el.closest('.jsx-figure'); })[0];
-    if (!img) {
-      script.parentNode.insertBefore(holder, script.nextSibling);
-      load(holder, qid, section);
-      return;
-    }
-    // Có ảnh gốc: chỉ thay khi máy chủ có hình, nếu không thì giữ nguyên ảnh. Ô chưa nằm trên trang thì
-    // ResizeObserver vẽ khi ô được gắn vào và có kích thước.
-    load(holder, qid, section).then(function (hasFigure) { if (hasFigure) img.replaceWith(holder); });
+    Array.prototype.forEach.call(document.querySelectorAll('div.jsx-figure[data-figure], div.jsx-figure[type][data]'), function (el) { mountElement(el); });
   }
 
-  window.JsxFigure = { version: VERSION, mount: mount, load: load };
+  window.JsxFigure = { version: VERSION, mount: mountElement };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
