@@ -3,6 +3,375 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
 
 "use strict";var JsxFigureLabelLayout=(()=>{var f=Object.defineProperty;var g=Object.getOwnPropertyDescriptor;var L=Object.getOwnPropertyNames;var p=Object.prototype.hasOwnProperty;var T=(e,n)=>{for(var t in n)f(e,t,{get:n[t],enumerable:!0})},B=(e,n,t,r)=>{if(n&&typeof n=="object"||typeof n=="function")for(let o of L(n))!p.call(e,o)&&o!==t&&f(e,o,{get:()=>n[o],enumerable:!(r=g(n,o))||r.enumerable});return e};var N=e=>B(f({},"__esModule",{value:!0}),e);var F={};T(F,{pointLabelPosition:()=>C});var a,v=(e,n)=>{if(typeof document=="undefined"||(a===void 0&&(a=document.createElement("canvas").getContext("2d")),!a))return null;a.font=`${e.italic?"italic":"normal"} ${e.bold?700:400} ${n}px "Times New Roman", "STIX Two Text", serif`;let t=a.measureText(e.text),r=t.actualBoundingBoxAscent+t.actualBoundingBoxDescent;return Number.isFinite(r)&&r>0?r:null},C=(e,n,t,r=v)=>{let o={x:e.x,y:e.y},u=e.layout;if(!u||u.anchor.length!==2||u.source_bounds.length!==4)return o;let[b,i,m,c]=u.source_bounds,[x,d]=u.anchor;if(![b,i,m,c,x,d,n,t].every(Number.isFinite)||m<=b||c<=i||n<=0||t<=0)return o;let s=r(e,t);if(s===null||!Number.isFinite(s)||s<=0)return o;let l=s/((c-i)*n);if(l>=.95||l<.4)return o;let y=x+((b+m)/2-x)*l,h=d+((i+c)/2-d)*l;return Math.hypot(y-e.x,h-e.y)>c-i?o:{x:y,y:h}};return N(F);})();
 
+// Vẽ biểu đồ (geometryType "chart", pipeline chart_analysis) bằng SVG thuần, không cần JSXGraph.
+// Dữ liệu: { chartType, title, xAxis, yAxis, categories, series: [{ id, name, kind, points: [{ x, y, size }] }] }.
+// Chữ tính theo điểm ảnh thật của ô (vẽ lại khi đổi cỡ), nên đọc được cả trên điện thoại.
+(function () {
+  'use strict';
+  var NS = 'http://www.w3.org/2000/svg';
+  var COLORS = ['#2563eb', '#ea580c', '#16a34a', '#9333ea', '#dc2626', '#0891b2', '#ca8a04', '#db2777'];
+  var INK = '#1f2937', MUTED = '#6b7280', GRID = '#e5e7eb';
+  var BAND = { column: 1, bar: 1 };
+  var KINDS = ['line', 'bar', 'column', 'pie', 'doughnut', 'area', 'scatter', 'bubble', 'radar', 'mixed'];
+
+  function add(parent, name, attrs, text) {
+    var el = document.createElementNS(NS, name);
+    for (var k in attrs) if (attrs[k] !== undefined && attrs[k] !== null) el.setAttribute(k, attrs[k]);
+    if (text !== undefined) el.textContent = text;
+    parent.appendChild(el);
+    return el;
+  }
+  function isNum(v) { return typeof v === 'number' && isFinite(v); }
+  function fmt(v) { return String(+v.toPrecision(6)).replace('.', ','); } // số thập phân kiểu Việt Nam
+  function textWidth(s, size) { return String(s).length * size * 0.56; }
+  function clip(s, max) { s = String(s); return s.length > max ? s.slice(0, Math.max(1, max - 1)) + '…' : s; }
+  function color(i) { return COLORS[i % COLORS.length]; }
+  // Màu của chuỗi: màu AI đọc từ ảnh (#RRGGBB) nếu hợp lệ, không thì bảng màu mặc định.
+  function seriesColor(c, i) { var v = c.series[i] && c.series[i].color; return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : color(i); }
+  function axisTitle(a) { return a && (a.label || a.unit) ? (a.label || '') + (a.unit ? (a.label ? ' (' + a.unit + ')' : a.unit) : '') : ''; }
+  function title(parent, text) { add(parent, 'title', {}, text); }
+
+  // Trục ghi rõ min/max (/step) như trong ảnh gốc (trục không bắt đầu từ 0 là có ý nghĩa với đề). Không dùng khi dữ liệu nằm ngoài
+  // khoảng đó hoặc khai báo vô lý: khi đó tự chia như bình thường.
+  function explicitTicks(axis, lo, hi) {
+    if (!axis || !isNum(axis.min) || !isNum(axis.max) || !(axis.max > axis.min) || lo < axis.min - 1e-9 || hi > axis.max + 1e-9) return null;
+    var span = axis.max - axis.min, step = isNum(axis.step) && axis.step > 0 ? axis.step : 0;
+    if (!step || span / step > 60) { var auto = niceTicks(axis.min, axis.max, 6); step = auto.length > 1 ? auto[1] - auto[0] : span; }
+    var ticks = [];
+    for (var v = axis.min; v <= axis.max + step * 1e-9; v += step) ticks.push(+v.toFixed(12));
+    if (ticks[ticks.length - 1] < axis.max - step * 1e-6) ticks.push(axis.max);
+    return ticks;
+  }
+  function niceTicks(lo, hi, want) {
+    if (!(hi > lo)) hi = lo + 1;
+    var span = hi - lo, step = Math.pow(10, Math.floor(Math.log10(span / want))), err = span / want / step;
+    step *= err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1;
+    var ticks = [];
+    for (var v = Math.floor(lo / step + 1e-9) * step; v <= hi + step * 1e-9; v += step) ticks.push(+v.toFixed(12));
+    if (ticks[ticks.length - 1] < hi) ticks.push(+(ticks[ticks.length - 1] + step).toFixed(12));
+    return ticks;
+  }
+  function logTicks(lo, hi) {
+    var a = Math.floor(Math.log10(lo)), b = Math.ceil(Math.log10(hi)), ticks = [];
+    if (a === b) b = a + 1;
+    for (var i = a; i <= b; i++) ticks.push(Math.pow(10, i));
+    return ticks;
+  }
+  function scaler(lo, hi, log, p0, p1) {
+    var a = log ? Math.log10(lo) : lo, b = log ? Math.log10(hi) : hi;
+    return function (v) { return p0 + ((log ? Math.log10(Math.max(v, lo)) : v) - a) / (b - a) * (p1 - p0); };
+  }
+
+  function valid(c) {
+    return !!c && Array.isArray(c.series) && c.series.length > 0 && c.series.every(function (s) {
+      return s && Array.isArray(s.points) && s.points.length > 0 && s.points.every(function (p) { return p && isNum(p.y); });
+    });
+  }
+  function kindOf(c) { return KINDS.indexOf(c.chartType) >= 0 ? c.chartType : (c.series[0].kind || 'line'); }
+
+  function labelsOf(c) {
+    var labels = (c.categories || []).map(String);
+    c.series.forEach(function (s) { s.points.forEach(function (p) {
+      if (typeof p.x === 'string' || labels.length) { var k = String(p.x); if (labels.indexOf(k) < 0) labels.push(k); }
+    }); });
+    return labels;
+  }
+
+  /** Tỉ lệ rộng/cao của ô vẽ. */
+  function aspect(c) {
+    var kind = kindOf(c), n = labelsOf(c).length || c.series[0].points.length;
+    if (kind === 'pie' || kind === 'doughnut') return 1.2;
+    if (kind === 'radar') return 1.1;
+    if (c.series.every(function (s) { return s.kind === 'bar'; })) return 640 / Math.min(560, Math.max(280, 120 + n * c.series.length * 26));
+    return 1.55;
+  }
+
+  function legendItems(c, kind) {
+    if (kind === 'pie' || kind === 'doughnut') return c.series[0].points.map(function (p, i) { return { name: String(p.x), color: color(i) }; });
+    var multi = c.series.length > 1;
+    return multi ? c.series.map(function (s, i) { return { name: s.name || s.id || '', color: seriesColor(c, i), kind: s.kind }; })
+      .filter(function (it) { return it.name; }) : [];
+  }
+  function legendRows(items, W, fs) {
+    var rows = [[]], used = 0;
+    items.forEach(function (it) {
+      var w = fs + 14 + textWidth(it.name, fs);
+      if (used + w > W - 24 && rows[rows.length - 1].length) { rows.push([]); used = 0; }
+      rows[rows.length - 1].push({ item: it, w: w }); used += w;
+    });
+    return rows[0].length ? rows : [];
+  }
+  function drawLegend(svg, rows, W, H, fs) {
+    var rowH = fs + 9, y = H - rows.length * rowH + 2;
+    rows.forEach(function (row, r) {
+      var total = row.reduce(function (a, x) { return a + x.w; }, 0), x = Math.max(12, (W - total) / 2);
+      row.forEach(function (cell) {
+        var cy = y + r * rowH + rowH / 2;
+        add(svg, 'rect', { x: x, y: cy - fs / 2 + 1, width: fs, height: fs - 2, rx: 2, fill: cell.item.color });
+        add(svg, 'text', { x: x + fs + 5, y: cy + fs * 0.35, 'font-size': fs, fill: INK }, cell.item.name);
+        x += cell.w;
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------ biểu đồ có trục
+  function cartesian(svg, c, box, fs) {
+    var series = c.series, horizontal = series.every(function (s) { return s.kind === 'bar'; });
+    var labels = labelsOf(c);
+    // Cột/thanh luôn xếp theo danh mục, kể cả khi x là số (năm 2010, 2011…).
+    if (!labels.length && (series.some(function (s) { return BAND[s.kind]; }) || (c.xAxis && c.xAxis.scale === 'category'))) {
+      series.forEach(function (s) { s.points.forEach(function (p) { var k = String(p.x); if (labels.indexOf(k) < 0) labels.push(k); }); });
+    }
+    var categorical = labels.length > 0;
+    var logY = c.yAxis && c.yAxis.scale === 'logarithmic', logX = !categorical && c.xAxis && c.xAxis.scale === 'logarithmic';
+    var ys = [], xs = [], bandKinds = false, sizes = [];
+    series.forEach(function (s) { s.points.forEach(function (p) {
+      ys.push(p.y); if (isNum(p.x)) xs.push(p.x); if (isNum(p.size)) sizes.push(p.size);
+    }); if (BAND[s.kind] || s.kind === 'area') bandKinds = true; });
+    var yLo = Math.min.apply(null, ys), yHi = Math.max.apply(null, ys);
+    var explicitY = logY ? null : explicitTicks(c.yAxis, yLo, yHi);
+    if (logY) { yLo = Math.min.apply(null, ys.filter(function (v) { return v > 0; })); }
+    else if (bandKinds && !explicitY) { yLo = Math.min(0, yLo); yHi = Math.max(0, yHi); }
+    // điểm/bong bóng không nằm sát mép trục: chừa đệm quanh miền giá trị
+    var padded = series.some(function (s) { return s.kind === 'bubble' || s.kind === 'scatter'; });
+    if (padded && !logY && !explicitY) { var padY = (yHi - yLo) * 0.12 || 1; yLo -= padY; yHi += padY; }
+    var yTicks = logY ? logTicks(yLo, yHi) : explicitY || niceTicks(yLo, yHi, horizontal ? 5 : 6);
+    yLo = yTicks[0]; yHi = yTicks[yTicks.length - 1];
+    var xTicks = null;
+    if (!categorical) {
+      var xLo = Math.min.apply(null, xs), xHi = Math.max.apply(null, xs);
+      var explicitX = logX ? null : explicitTicks(c.xAxis, xLo, xHi);
+      if (padded && !logX && !explicitX) { var padX = (xHi - xLo) * 0.12 || 1; xLo -= padX; xHi += padX; }
+      xTicks = logX ? logTicks(xLo, xHi) : explicitX || niceTicks(xLo, xHi, 6);
+    }
+    var catTitle = axisTitle(c.xAxis), valTitle = axisTitle(c.yAxis);
+    var tickText = function (v) { return fmt(v); };
+    // lề: nhãn trục dọc rộng bao nhiêu thì chừa bấy nhiêu (nhãn danh mục của biểu đồ ngang dài tối đa 38% bề rộng)
+    var vertLabels = horizontal ? labels.map(function (l) { return clip(l, Math.max(6, Math.floor(box.w * 0.38 / (fs * 0.56)))); }) : yTicks.map(tickText);
+    var left = box.x + Math.max.apply(null, vertLabels.map(function (l) { return textWidth(l, fs); }).concat([10])) + 12 + ((horizontal ? catTitle : valTitle) ? fs + 8 : 0);
+    var right = box.x + box.w - 14;
+    var horizLabels = horizontal ? yTicks.map(tickText) : (categorical ? labels : xTicks.map(tickText));
+    // độ rộng chữ đo thật trên SVG (chữ có dấu rộng hơn ước lượng); không đo được thì dùng ước lượng
+    var measure = function (text) {
+      try { var t = add(svg, 'text', { 'font-size': fs, visibility: 'hidden' }, text), w = t.getBBox().width; svg.removeChild(t); return w || textWidth(text, fs); }
+      catch (error) { return textWidth(text, fs); }
+    };
+    var maxChars = fs < 13 ? 10 : 18; // màn hình hẹp: nhãn ngắn hơn (đầy đủ trong chú thích khi chạm/rê)
+    var shown = horizLabels.map(function (l) { return clip(l, maxChars); });
+    var band = categorical && !horizontal ? (right - left) / Math.max(1, labels.length) : 0;
+    var rotate = !horizontal && categorical && Math.max.apply(null, shown.map(measure)) > band * 0.92;
+    var longest = Math.min(140, Math.max.apply(null, shown.map(measure)));
+    if (rotate) { // nhãn xoay -40° thò sang trái quá trục dọc: chừa lề để không bị cắt chữ đầu
+      left = Math.max(left, box.x + measure(shown[0]) * 0.77 + fs * 0.64 - band / 2 + 6);
+      band = (right - left) / Math.max(1, labels.length);
+    }
+    var bottomPad = (rotate ? longest * 0.64 + fs + 6 : fs + 10) + ((horizontal ? valTitle : catTitle) ? fs + 8 : 0);
+    var top = box.y + 6, bottom = box.y + box.h - bottomPad;
+    if (bottom - top < 60 || right - left < 60) return false;
+
+    // dịch chuyển: giá trị ↔ điểm ảnh
+    var yPix = scaler(yLo, yHi, logY, bottom, top), xPix;
+    var catPix = function (i) { return left + (i + 0.5) * band; };
+    if (horizontal) {
+      var rowH = (bottom - top) / Math.max(1, labels.length);
+      catPix = function (i) { return top + (i + 0.5) * rowH; };
+      yPix = scaler(yLo, yHi, logY, left, right);
+    } else if (!categorical) {
+      xPix = scaler(xTicks[0], xTicks[xTicks.length - 1], logX, left, right);
+    }
+
+    // lưới + trục
+    if (horizontal) {
+      yTicks.forEach(function (v) {
+        var x = yPix(v);
+        add(svg, 'line', { x1: x, y1: top, x2: x, y2: bottom, stroke: GRID });
+        add(svg, 'text', { x: x, y: bottom + fs + 4, 'text-anchor': 'middle', 'font-size': fs, fill: MUTED }, tickText(v));
+      });
+      labels.forEach(function (l, i) {
+        add(svg, 'text', { x: left - 6, y: catPix(i) + fs * 0.35, 'text-anchor': 'end', 'font-size': fs, fill: INK }, clip(l, 40));
+      });
+    } else {
+      yTicks.forEach(function (v) {
+        var y = yPix(v);
+        add(svg, 'line', { x1: left, y1: y, x2: right, y2: y, stroke: GRID });
+        add(svg, 'text', { x: left - 6, y: y + fs * 0.35, 'text-anchor': 'end', 'font-size': fs, fill: MUTED }, tickText(v));
+      });
+      var xt = categorical ? labels.map(function (l, i) { return { v: l, x: catPix(i) }; }) : xTicks.map(function (v) { return { v: tickText(v), x: xPix(v) }; });
+      if (!categorical) xTicks.forEach(function (v) { add(svg, 'line', { x1: xPix(v), y1: top, x2: xPix(v), y2: bottom, stroke: GRID }); });
+      xt.forEach(function (t) {
+        var text = clip(t.v, maxChars), a = { x: t.x, y: bottom + fs + 4, 'font-size': fs, fill: INK };
+        if (rotate) { a['text-anchor'] = 'end'; a.transform = 'rotate(-40 ' + t.x + ' ' + (bottom + fs + 4) + ')'; } else a['text-anchor'] = 'middle';
+        add(svg, 'text', a, text);
+      });
+    }
+    var zeroY = horizontal ? null : yPix(logY ? yLo : Math.max(yLo, Math.min(yHi, 0)));
+    var zeroX = horizontal ? yPix(logY ? yLo : Math.max(yLo, Math.min(yHi, 0))) : null;
+    add(svg, 'line', { x1: left, y1: bottom, x2: right, y2: bottom, stroke: MUTED });
+    add(svg, 'line', { x1: left, y1: top, x2: left, y2: bottom, stroke: MUTED });
+    if (horizontal && zeroX > left + 1) add(svg, 'line', { x1: zeroX, y1: top, x2: zeroX, y2: bottom, stroke: MUTED });
+    if (!horizontal && zeroY < bottom - 1) add(svg, 'line', { x1: left, y1: zeroY, x2: right, y2: zeroY, stroke: MUTED });
+    if (valTitle) {
+      if (horizontal) add(svg, 'text', { x: (left + right) / 2, y: box.y + box.h - 4, 'text-anchor': 'middle', 'font-size': fs, fill: MUTED }, valTitle);
+      else add(svg, 'text', { x: box.x + fs + 2, y: (top + bottom) / 2, 'text-anchor': 'middle', 'font-size': fs, fill: MUTED, transform: 'rotate(-90 ' + (box.x + fs + 2) + ' ' + (top + bottom) / 2 + ')' }, valTitle);
+    }
+    if (catTitle) {
+      if (horizontal) add(svg, 'text', { x: box.x + fs + 2, y: (top + bottom) / 2, 'text-anchor': 'middle', 'font-size': fs, fill: MUTED, transform: 'rotate(-90 ' + (box.x + fs + 2) + ' ' + (top + bottom) / 2 + ')' }, catTitle);
+      else add(svg, 'text', { x: (left + right) / 2, y: box.y + box.h - 4, 'text-anchor': 'middle', 'font-size': fs, fill: MUTED }, catTitle);
+    }
+
+    // số dòng/cột theo nhóm
+    var bars = series.filter(function (s) { return BAND[s.kind]; });
+    var points = series.reduce(function (a, s) { return a + s.points.length; }, 0);
+    // ảnh gốc không in số lên cột/điểm (showDataLabels=false) thì bản vẽ cũng không in: không để lộ đáp án của đề đọc số trên trục
+    var showValues = points <= 30 && c.showDataLabels !== false;
+    var maxSize = sizes.length ? Math.max.apply(null, sizes) : 1;
+    var position = function (p) {
+      var i = categorical ? labels.indexOf(String(p.x)) : -1;
+      return { cx: categorical ? catPix(i) : xPix(p.x), cy: yPix(p.y) };
+    };
+    series.forEach(function (s, si) {
+      var col = seriesColor(c, si), g = add(svg, 'g', {});
+      if (BAND[s.kind]) {
+        var gi = bars.indexOf(s), k = bars.length, span = (horizontal ? (bottom - top) / Math.max(1, labels.length) : band) * (k === 1 ? 0.5 : 0.64), w = span / k;
+        s.points.forEach(function (p) {
+          var i = labels.indexOf(String(p.x)), centre = catPix(i), start = centre - span / 2 + gi * w, r;
+          if (horizontal) {
+            var x1 = yPix(p.y), x0 = zeroX;
+            r = add(g, 'rect', { x: Math.min(x0, x1), y: start, width: Math.max(1, Math.abs(x1 - x0)), height: Math.max(1, w - 1), fill: col });
+            if (showValues) add(g, 'text', { x: x1 >= x0 ? x1 + 4 : x1 - 4, y: start + w / 2 + fs * 0.35, 'text-anchor': x1 >= x0 ? 'start' : 'end', 'font-size': fs - 1, fill: INK }, fmt(p.y));
+          } else {
+            var y1 = yPix(p.y), y0 = zeroY;
+            r = add(g, 'rect', { x: start, y: Math.min(y0, y1), width: Math.max(1, w - 1), height: Math.max(1, Math.abs(y0 - y1)), fill: col });
+            if (showValues && textWidth(fmt(p.y), fs - 1) <= w + 4) add(g, 'text', { x: start + w / 2, y: y1 <= y0 ? y1 - 4 : y1 + fs, 'text-anchor': 'middle', 'font-size': fs - 1, fill: INK }, fmt(p.y));
+          }
+          title(r, (s.name ? s.name + ': ' : '') + String(p.x) + ' = ' + fmt(p.y));
+        });
+        return;
+      }
+      var pts = s.points.map(position);
+      if (s.kind === 'area') {
+        var base = yPix(logY ? yLo : Math.max(yLo, Math.min(yHi, 0)));
+        add(g, 'path', { d: 'M' + pts[0].cx + ' ' + base + pts.map(function (q) { return 'L' + q.cx + ' ' + q.cy; }).join('') + 'L' + pts[pts.length - 1].cx + ' ' + base + 'Z', fill: col, 'fill-opacity': 0.22 });
+      }
+      if (s.kind === 'line' || s.kind === 'area') {
+        add(g, 'path', { d: pts.map(function (q, i) { return (i ? 'L' : 'M') + q.cx + ' ' + q.cy; }).join(''), fill: 'none', stroke: col, 'stroke-width': 2.2, 'stroke-linejoin': 'round' });
+      }
+      s.points.forEach(function (p, i) {
+        var q = pts[i], mark;
+        if (s.kind === 'bubble') {
+          mark = add(g, 'circle', { cx: q.cx, cy: q.cy, r: 5 + 22 * Math.sqrt((p.size || 0) / maxSize), fill: col, 'fill-opacity': 0.5, stroke: col });
+        } else {
+          mark = add(g, 'circle', { cx: q.cx, cy: q.cy, r: s.kind === 'scatter' ? 4 : 3.2, fill: col, stroke: '#fff', 'stroke-width': 1 });
+        }
+        title(mark, (s.name ? s.name + ': ' : '') + String(p.x) + ', ' + fmt(p.y) + (p.size != null ? ' (' + fmt(p.size) + ')' : ''));
+        if (showValues && points <= 14 && !bars.length && s.kind !== 'scatter' && s.kind !== 'bubble') { // kết hợp cột + đường: chỉ ghi số trên cột
+          // Số đặt ở phía không có đường: đỉnh → trên, đáy → dưới, đoạn dốc lên → trên-trái, dốc xuống → trên-phải.
+          var before = pts[i - 1], after = pts[i + 1], up = before && before.cy > q.cy, down = after && after.cy > q.cy;
+          var peak = (!before || up) && (!after || down), valley = (!before || before.cy < q.cy) && (!after || after.cy < q.cy);
+          var rising = before ? before.cy > q.cy : after && after.cy < q.cy;
+          var lx = q.cx, ly = q.cy - 8, anchor = 'middle';
+          if (valley && !peak) ly = q.cy + fs + 3;
+          else if (!peak) { anchor = rising ? 'end' : 'start'; lx = q.cx + (rising ? -5 : 5); ly = q.cy - 6; }
+          // sát trục thì lệch sang trong để không đè nhãn trục
+          if (anchor === 'middle') { var edge = q.cx - left < 14 ? 'start' : right - q.cx < 14 ? 'end' : 'middle'; anchor = edge; lx += edge === 'start' ? 3 : edge === 'end' ? -3 : 0; }
+          else if (anchor === 'end' && lx - left < 4) { anchor = 'start'; lx = q.cx + 5; }
+          else if (anchor === 'start' && right - lx < 4) { anchor = 'end'; lx = q.cx - 5; }
+          add(g, 'text', { x: lx, y: ly, 'text-anchor': anchor, 'font-size': fs - 1, fill: INK }, fmt(p.y));
+        }
+      });
+    });
+    return true;
+  }
+
+  // ------------------------------------------------------------------ tròn / vành khuyên
+  function pie(svg, c, box, fs, ring) {
+    var pts = c.series[0].points, total = pts.reduce(function (a, p) { return a + Math.max(0, p.y); }, 0);
+    if (!(total > 0)) return false;
+    var unit = c.yAxis && c.yAxis.unit ? ' ' + c.yAxis.unit : '';
+    var cx = box.x + box.w / 2, cy = box.y + box.h / 2, R = Math.min(box.w / 2 - fs * 4.2, box.h / 2 - fs * 1.8);
+    if (R < 30) R = Math.max(30, Math.min(box.w, box.h) / 2 - fs * 2);
+    var r0 = ring ? R * 0.55 : 0, angle = -Math.PI / 2;
+    var point = function (r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+    pts.forEach(function (p, i) {
+      if (!(p.y > 0)) return;
+      var sweep = p.y / total * Math.PI * 2, a1 = angle + sweep, big = sweep > Math.PI ? 1 : 0, d, path;
+      if (sweep >= Math.PI * 2 - 1e-6) {
+        d = ring ? 'M' + (cx + R) + ' ' + cy + 'A' + R + ' ' + R + ' 0 1 1 ' + (cx - R) + ' ' + cy + 'A' + R + ' ' + R + ' 0 1 1 ' + (cx + R) + ' ' + cy
+          + 'M' + (cx + r0) + ' ' + cy + 'A' + r0 + ' ' + r0 + ' 0 1 0 ' + (cx - r0) + ' ' + cy + 'A' + r0 + ' ' + r0 + ' 0 1 0 ' + (cx + r0) + ' ' + cy + 'Z'
+          : 'M' + (cx + R) + ' ' + cy + 'A' + R + ' ' + R + ' 0 1 1 ' + (cx - R) + ' ' + cy + 'A' + R + ' ' + R + ' 0 1 1 ' + (cx + R) + ' ' + cy + 'Z';
+      } else {
+        var s0 = point(R, angle), s1 = point(R, a1);
+        d = ring ? 'M' + s0 + 'A' + R + ' ' + R + ' 0 ' + big + ' 1 ' + s1 + 'L' + point(r0, a1) + 'A' + r0 + ' ' + r0 + ' 0 ' + big + ' 0 ' + point(r0, angle) + 'Z'
+          : 'M' + cx + ' ' + cy + 'L' + s0 + 'A' + R + ' ' + R + ' 0 ' + big + ' 1 ' + s1 + 'Z';
+      }
+      path = add(svg, 'path', { d: d, fill: color(i), stroke: '#fff', 'stroke-width': 1.5, 'fill-rule': 'evenodd' });
+      title(path, String(p.x) + ': ' + fmt(p.y) + unit + ' (' + fmt(Math.round(p.y / total * 1000) / 10) + '%)');
+      var mid = angle + sweep / 2, out = point(R + 8, mid), right = Math.cos(mid) >= 0;
+      if (c.showDataLabels !== false) add(svg, 'text', { x: out[0] + (right ? 2 : -2), y: out[1] + fs * 0.35, 'text-anchor': right ? 'start' : 'end', 'font-size': fs, fill: INK }, fmt(p.y) + unit);
+      angle = a1;
+    });
+    return true;
+  }
+
+  // ------------------------------------------------------------------ radar
+  function radar(svg, c, box, fs) {
+    var labels = labelsOf(c), n = labels.length;
+    if (n < 3) return false;
+    var max = Math.max.apply(null, c.series.reduce(function (a, s) { return a.concat(s.points.map(function (p) { return p.y; })); }, [0]));
+    var ticks = niceTicks(0, max, 4), top = ticks[ticks.length - 1];
+    var cx = box.x + box.w / 2, cy = box.y + box.h / 2, R = Math.min(box.w / 2 - fs * 5, box.h / 2 - fs * 3);
+    if (R < 30) R = 30;
+    var at = function (i, r) { var a = -Math.PI / 2 + i * 2 * Math.PI / n; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+    ticks.slice(1).forEach(function (v) {
+      add(svg, 'polygon', { points: labels.map(function (_, i) { return at(i, R * v / top); }).join(' '), fill: 'none', stroke: GRID });
+      add(svg, 'text', { x: cx + 3, y: cy - R * v / top - 2, 'font-size': fs - 2, fill: MUTED }, fmt(v));
+    });
+    labels.forEach(function (l, i) {
+      var edge = at(i, R), out = at(i, R + 10 + (i === 0 ? fs : 0)); // nhãn đỉnh nằm trên số của vòng ngoài cùng
+      add(svg, 'line', { x1: cx, y1: cy, x2: edge[0], y2: edge[1], stroke: GRID });
+      var side = Math.abs(out[0] - cx) < 6 ? 'middle' : out[0] > cx ? 'start' : 'end';
+      add(svg, 'text', { x: out[0], y: out[1] + (out[1] > cy ? fs : fs * 0.2), 'text-anchor': side, 'font-size': fs, fill: INK }, clip(l, 16));
+    });
+    c.series.forEach(function (s, si) {
+      var by = {};
+      s.points.forEach(function (p) { by[String(p.x)] = p.y; });
+      var ring = labels.map(function (l, i) { return at(i, R * Math.min(1, (by[l] || 0) / top)); });
+      add(svg, 'polygon', { points: ring.join(' '), fill: seriesColor(c, si), 'fill-opacity': 0.18, stroke: seriesColor(c, si), 'stroke-width': 2 });
+      ring.forEach(function (q) { add(svg, 'circle', { cx: q[0], cy: q[1], r: 3, fill: seriesColor(c, si) }); });
+    });
+    return true;
+  }
+
+  /** Vẽ biểu đồ vào ô el (đã có chiều rộng). Trả về null (không có bảng JSXGraph để giải phóng). */
+  function draw(el, c, ratio) {
+    var W = el.clientWidth, fs = W < 420 ? 11 : 13, kind = kindOf(c);
+    // màn hình hẹp: ô cao hơn để chữ không chen nhau (ô đặt aspect-ratio nên chiều cao đổi theo)
+    var shape = W < 480 ? ratio * 0.72 : ratio;
+    el.style.aspectRatio = String(shape);
+    var H = el.clientHeight || W / shape;
+    el.innerHTML = '';
+    var svg = add(el, 'svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: '100%', role: 'img', 'aria-label': c.title || 'Biểu đồ',
+      style: 'display:block;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif' });
+    add(svg, 'rect', { width: W, height: H, fill: '#fff' });
+    var top = 6, rows = legendRows(legendItems(c, kind), W, fs), legendH = rows.length ? rows.length * (fs + 9) + 6 : 0;
+    if (c.title) {
+      var size = Math.max(10, Math.min(fs + 2, (W - 16) / Math.max(1, textWidth(c.title, 1))));
+      add(svg, 'text', { x: W / 2, y: top + size + 2, 'text-anchor': 'middle', 'font-size': size, 'font-weight': 600, fill: INK }, c.title);
+      top += size + 12;
+    }
+    var box = { x: 0, y: top, w: W, h: H - top - legendH - 4 }, ok = false;
+    try {
+      ok = kind === 'pie' || kind === 'doughnut' ? pie(svg, c, box, fs, kind === 'doughnut')
+        : kind === 'radar' ? radar(svg, c, box, fs) : cartesian(svg, c, box, fs);
+    } catch (error) { if (window.console) console.warn('[jsx-figure] chart', error); }
+    if (!ok) { el.innerHTML = '<div class="jsx-figure-note">Không vẽ được biểu đồ.</div>'; return null; }
+    drawLegend(svg, rows, W, H, fs);
+    return null;
+  }
+
+  window.JsxFigureChart = { valid: valid, aspect: aspect, draw: draw };
+})();
+
 /*!
  * jsx-figure v1 — vẽ hình JSXGraph của một câu hỏi cho WebView / web, giống hình trên web CMS.
  * Các dạng: đồ thị hàm số, bảng biến thiên, biểu đồ Venn, hình học phẳng, cơ học (con lắc, lò xo, vật), lăng trụ / chóp cụt, lăng trụ tam giác, chóp.
@@ -41,6 +410,7 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
 
   var script = document.currentScript;
   var scriptSrc = script ? script.src : '';
+  var apiBase = (script && script.getAttribute('data-api')) || (scriptSrc ? new URL('/api/v1/jsx-figure', scriptSrc).href : '/api/v1/jsx-figure');
 
   // ------------------------------------------------------------------ nạp file kèm theo một lần (tự host, không dùng CDN)
   var loading = {};
@@ -104,7 +474,11 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
       return board.create('segment', [from, to], extend(FIXED, NO_ENDS, { strokeColor: INK, strokeWidth: LINE_WIDTH }, extra || {}));
     };
 
-    (r.guides || []).concat(r.asymptotes || []).forEach(function (g) { line(g.from, g.to, { dash: 2 }); });
+    (r.guides || []).concat(r.asymptotes || []).forEach(function (g) {
+      var style = g.line_style === 'solid' ? {} : { dash: 2 };
+      if (g.arrow === 'both') { style.firstArrow = { type: 2, size: 5 }; style.lastArrow = { type: 2, size: 5 }; }
+      line(g.from, g.to, style);
+    });
     if (r.axes) {
       [r.axes.x, r.axes.y].forEach(function (a) { line(a.from, a.to, { lastArrow: { type: 2, size: 6 } }); });
       (r.tick_marks || []).forEach(function (t) {
@@ -145,6 +519,7 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
       text(l.x, l.y, l.text, {
         fontSize: l.kind === 'axis_name' ? fs + 2 : fs,
         anchorX: ANCHOR[l.anchor_x] || 'middle', anchorY: ANCHOR[l.anchor_y] || 'middle',
+        rotate: l.rotation_deg || 0,
         cssStyle: (l.kind === 'axis_name' ? SERIF : LABEL_CSS) + style,
       });
     });
@@ -222,17 +597,17 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
 
     (r.dots || []).forEach(function (d) {
       board.create('point', [d.x, d.y], extend(FIXED, {
-        size: Math.max(1.5, d.radius_px * unit), strokeWidth: 0, fillColor: d.color, strokeColor: d.color, withLabel: false, face: 'o',
+        size: Math.max(1.5, d.radius_px * unit), strokeWidth: d.outline ? 1.2 : 0, fillColor: d.color, strokeColor: d.outline || d.color, withLabel: false, face: 'o',
       }));
     });
 
     // Chữ: nút văn bản SVG (display 'internal', parse tắt) → không bao giờ thành HTML.
     (r.labels || []).forEach(function (l) {
       var region = r.kind === 'inequality_region';
-      var fontSize = clamp(Math.round(l.font_px_ref * unit), region ? 9 : 13, 48);
+      var fontSize = clamp(Math.round(l.font_px_ref * unit), region ? 9 : 8, 48);
       var family = l.font_family === 'sans-serif' ? 'font-family:Arial,Helvetica,sans-serif;' : SERIF;
       var halo = l.halo === undefined ? !region : l.halo;
-      var labelStyle = halo ? (region ? family + 'paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round;' : LABEL_CSS) : family;
+      var labelStyle = halo ? family + 'paint-order:stroke;stroke:#fff;stroke-width:1.5px;stroke-linejoin:round;' : family;
       var position = window.JsxFigureLabelLayout ? window.JsxFigureLabelLayout.pointLabelPosition(l, unit, fontSize) : l;
       board.create('text', [position.x, position.y, String(l.text)], extend(FIXED, {
         display: 'internal', parse: false, useMathJax: false, useKatex: false, strokeColor: l.color,
@@ -398,7 +773,7 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     if (r && r.kind === 'function_graph') {
       return Promise.resolve([{ aspect: aspectOf(r.view_box), draw: function (JXG, el) { return drawFunctionGraph(JXG, el, r); } }]);
     }
-    if (r && (r.kind === 'venn_diagram' || r.kind === 'plane_geometry' || r.kind === 'vector_diagram' || r.kind === 'inequality_region')) {
+    if (r && (r.kind === 'venn_diagram' || r.kind === 'number_line' || r.kind === 'plane_geometry' || r.kind === 'vector_diagram' || r.kind === 'network_graph' || r.kind === 'inequality_region')) {
       return Promise.resolve([{
         aspect: aspectOf(r.view_box),
         originalWidth: r.kind === 'vector_diagram' ? r.view_box[2] - r.view_box[0] : null,
@@ -407,6 +782,12 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     }
     if (r && r.kind === 'variation_table') {
       return Promise.resolve([{ aspect: aspectOf(r.view_box), draw: function (JXG, el) { return drawVariationTable(JXG, el, r); } }]);
+    }
+    // Biểu đồ (pipeline chart_analysis): dữ liệu lưu thô { isChart, chartType, data } hoặc đã gói sẵn { type:'chart', data }.
+    if (type === 'chart' && !f && payload.isChart && payload.data) f = extend(payload.data, { chartType: payload.chartType });
+    if (type === 'chart' && f && window.JsxFigureChart && window.JsxFigureChart.valid(f)) {
+      var Chart = window.JsxFigureChart, ratio = Chart.aspect(f);
+      return Promise.resolve([{ aspect: ratio, maxWidth: 720, svg: true, draw: function (JXG, el) { return Chart.draw(el, f, ratio); } }]);
     }
     if (type === 'mechanics' && f) {
       // Bố cục cơ học (src/mechanics-layout.js, sinh từ CMS) được build.py ghép vào đầu file này.
@@ -475,57 +856,56 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
   /** Vẽ dữ liệu { geometryType, render, figure } vào container. Kết quả: true nếu có hình. */
   function mount(container, payload) {
     injectCss();
-    return Promise.all([plan(payload), loadJSXGraph()]).then(function (res) {
-      var items = res[0], JXG = res[1];
+    return plan(payload).then(function (items) {
       if (!items.length) return false;
-      container.innerHTML = '';
-      container.classList.add('jsx-figure');
-      items.forEach(function (item) { drawWhenSized(JXG, addBoard(container, item), item); });
-      return true;
+      // Biểu đồ vẽ bằng SVG thuần: không tải JSXGraph (946 KB) khi mọi ô đều là SVG.
+      var needs = items.some(function (item) { return !item.svg; });
+      return (needs ? loadJSXGraph() : Promise.resolve(null)).then(function (JXG) {
+        container.innerHTML = '';
+        container.classList.add('jsx-figure');
+        items.forEach(function (item) { drawWhenSized(JXG, addBoard(container, item), item); });
+        return true;
+      });
     });
   }
 
-  // ------------------------------------------------------------------ bản gọn: dữ liệu nằm sẵn trong thẻ, không gọi API
-  // Đọc dữ liệu hình từ thẻ: data-figure (hoặc data) là JSON. Chấp nhận: { type, data } | khối render trần (có kind) |
-  // { render, figure } kèm attribute type | figure trần (cơ học, hình không gian) kèm attribute type.
-  function readFigure(el) {
-    var raw = el.getAttribute('data-figure') || el.getAttribute('data');
-    if (!raw) return null;
-    var d = JSON.parse(raw);
-    if (!d || typeof d !== 'object' || Array.isArray(d)) throw new TypeError('Dữ liệu hình phải là một object JSON.');
-    var type = el.getAttribute('type') || el.getAttribute('data-type');
-    if (d.type && d.data !== undefined && !d.geometryType) return normalize(d);
-    if (d.kind && !d.render) return { geometryType: d.kind, render: d, figure: null };
-    if (d.render || d.figure) { if (type) d.geometryType = type; return d; }
-    return type ? { geometryType: type, render: null, figure: d } : null;
+  function load(container, questionId, section) {
+    var id = section === 'explanation' ? questionId + ':explanation' : questionId;
+    injectCss();
+    return fetch(apiBase + '/render/' + encodeURIComponent(id), { headers: { Accept: 'application/json' } })
+      .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+      .then(function (payload) { return mount(container, payload); }) // câu không có hình: false, để nguyên trang
+      .catch(function (err) {
+        container.innerHTML = '<div class="jsx-figure-note">Không tải được hình.</div>';
+        if (window.console) console.warn('[jsx-figure]', err);
+        return false;
+      });
   }
 
-  /** Vẽ hình vào phần tử (đọc dữ liệu từ chính phần tử đó). Kết quả: Promise<true> nếu vẽ được. Thẻ đã vẽ thì bỏ qua. */
-  function mountElement(el) {
-    if (!el || el.getAttribute('data-rendered')) return Promise.resolve(false);
-    var figure;
-    try { figure = readFigure(el); } catch (error) { return fail(el, error); }
-    if (!figure) return Promise.resolve(false);
-    el.setAttribute('data-rendered', 'pending');
-    return mount(el, figure).then(function (ok) {
-      el.setAttribute('data-rendered', ok ? 'ok' : 'empty');
-      return ok;
-    }, function (error) { return fail(el, error); });
-  }
-
-  function fail(el, error) {
-    el.setAttribute('data-rendered', 'error');
-    el.textContent = 'Dữ liệu hình minh họa không hợp lệ.';
-    if (window.console) console.error('[jsx-figure]', error);
-    return Promise.resolve(false);
-  }
-
-  // Tự vẽ mọi thẻ có sẵn dữ liệu khi trang sẵn sàng.
+  // Chỗ đặt hình: data-target, nếu không thì thay ảnh <img> đầu tiên (giữ ảnh gốc nếu không có hình), cuối cùng là sau thẻ script.
   function boot() {
-    Array.prototype.forEach.call(document.querySelectorAll('div.jsx-figure[data-figure], div.jsx-figure[type][data]'), function (el) { mountElement(el); });
+    Array.prototype.forEach.call(document.querySelectorAll('div.jsx-figure[data-question-id]'), function (el) {
+      load(el, el.getAttribute('data-question-id'), el.getAttribute('data-section'));
+    });
+    var qid = script && script.getAttribute('data-question-id');
+    if (!qid) return;
+    var section = script.getAttribute('data-section');
+    var selector = script.getAttribute('data-target');
+    var target = selector ? document.querySelector(selector) : null;
+    if (target) { load(target, qid, section); return; }
+    var holder = document.createElement('div');
+    var img = Array.prototype.filter.call(document.images, function (el) { return !el.closest('.jsx-figure'); })[0];
+    if (!img) {
+      script.parentNode.insertBefore(holder, script.nextSibling);
+      load(holder, qid, section);
+      return;
+    }
+    // Có ảnh gốc: chỉ thay khi máy chủ có hình, nếu không thì giữ nguyên ảnh. Ô chưa nằm trên trang thì
+    // ResizeObserver vẽ khi ô được gắn vào và có kích thước.
+    load(holder, qid, section).then(function (hasFigure) { if (hasFigure) img.replaceWith(holder); });
   }
 
-  window.JsxFigure = { version: VERSION, mount: mountElement };
+  window.JsxFigure = { version: VERSION, mount: mount, load: load };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
