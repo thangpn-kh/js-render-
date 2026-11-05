@@ -838,9 +838,11 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     return el;
   }
 
-  // Vẽ khi ô có kích thước, vẽ lại khi xoay màn hình / đổi cỡ WebView.
+  // Vẽ khi ô có kích thước, vẽ lại khi xoay màn hình / đổi cỡ WebView. Gắn hàm dọn (board + ResizeObserver) lên
+  // chính ô đó, để freeContainer() gọi lại được khi trang vẽ lại/rời đi — không làm thế thì ResizeObserver vẫn
+  // giữ tham chiếu đến ô cũ mãi mãi (rò rỉ bộ nhớ dần qua mỗi lần vẽ lại, từng gây treo trang thật).
   function drawWhenSized(JXG, el, item) {
-    var board = null, lastW = 0, frame = 0;
+    var board = null, lastW = 0, frame = 0, observer = null;
     var draw = function () {
       if (!el.clientWidth || el.clientWidth === lastW) return;
       lastW = el.clientWidth;
@@ -849,14 +851,48 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     };
     draw();
     if (window.ResizeObserver) {
-      new ResizeObserver(function () { cancelAnimationFrame(frame); frame = requestAnimationFrame(draw); }).observe(el);
+      observer = new ResizeObserver(function () { cancelAnimationFrame(frame); frame = requestAnimationFrame(draw); });
+      observer.observe(el);
     }
+    el._jsxFigureCleanup = function () {
+      cancelAnimationFrame(frame);
+      if (observer) observer.disconnect();
+      if (board) { JXG.JSXGraph.freeBoard(board); board = null; }
+    };
   }
 
-  /** Vẽ dữ liệu { geometryType, render, figure } vào container. Kết quả: true nếu có hình. */
+  // Giải phóng mọi board + ResizeObserver đã vẽ bên trong container (vẽ lại hoặc rời trang).
+  function freeContainer(container) {
+    Array.prototype.forEach.call(container.querySelectorAll('.jsx-figure-board'), function (el) {
+      if (el._jsxFigureCleanup) { el._jsxFigureCleanup(); el._jsxFigureCleanup = null; }
+    });
+  }
+
+  // Đọc dữ liệu hình đã nhúng sẵn trên chính element (câu đã duyệt: CMS lưu data-figure='{...JSON...}' ngay
+  // trong HTML, hoặc dạng cũ type="..." data="..."). Trả về null khi không có gì để đọc.
+  function readEmbeddedPayload(el) {
+    var raw = el.getAttribute('data-figure');
+    if (raw) {
+      try { return JSON.parse(raw); } catch (e) { return null; }
+    }
+    var type = el.getAttribute('type') || el.getAttribute('data-type');
+    var dataRaw = el.getAttribute('data');
+    if (type && dataRaw) {
+      try { return { type: type, data: JSON.parse(dataRaw) }; } catch (e) { return null; }
+    }
+    return null;
+  }
+
+  /** Vẽ dữ liệu { geometryType, render, figure } vào container. Không truyền payload: tự đọc từ attribute của
+   * chính container (câu đã duyệt, dữ liệu đã nhúng sẵn trong HTML). Kết quả: true nếu có hình. */
   function mount(container, payload) {
     injectCss();
+    if (payload === undefined) {
+      payload = readEmbeddedPayload(container);
+      if (!payload) return Promise.resolve(false);
+    }
     return plan(payload).then(function (items) {
+      freeContainer(container); // vẽ lại cùng một ô (đổi câu hỏi): dọn hình cũ trước khi vẽ hình mới
       if (!items.length) return false;
       // Biểu đồ vẽ bằng SVG thuần: không tải JSXGraph (946 KB) khi mọi ô đều là SVG.
       var needs = items.some(function (item) { return !item.svg; });
@@ -868,6 +904,9 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
       });
     });
   }
+
+  /** Giải phóng hình đã vẽ trong container (gọi khi ô rời khỏi trang / component unmount). */
+  function unmount(container) { freeContainer(container); }
 
   function load(container, questionId, section) {
     var id = section === 'explanation' ? questionId + ':explanation' : questionId;
@@ -905,7 +944,7 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
     load(holder, qid, section).then(function (hasFigure) { if (hasFigure) img.replaceWith(holder); });
   }
 
-  window.JsxFigure = { version: VERSION, mount: mount, load: load };
+  window.JsxFigure = { version: VERSION, mount: mount, load: load, unmount: unmount };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
