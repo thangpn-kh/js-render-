@@ -922,8 +922,35 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
   }
 
   // Chỗ đặt hình: data-target, nếu không thì thay ảnh <img> đầu tiên (giữ ảnh gốc nếu không có hình), cuối cùng là sau thẻ script.
+  // Tự vẽ thẻ .jsx-figure có sẵn dữ liệu nhúng (data-figure): FE chỉ cần nhúng script, không phải gọi mount từng thẻ.
+  // Mỗi thẻ chỉ tự vẽ một lần; gọi mount thủ công sau đó vẫn an toàn (vẽ lại cùng một ô).
+  function autoMount(el) {
+    if (!el || el._jsxFigureAuto || !readEmbeddedPayload(el)) return false;
+    el._jsxFigureAuto = true;
+    mount(el).catch(function (err) { if (window.console) console.warn('[jsx-figure]', err); });
+    return true;
+  }
+
+  function autoMountWithin(root) {
+    if (!root || root.nodeType !== 1) return;
+    if (root.classList && root.classList.contains('jsx-figure')) autoMount(root);
+    Array.prototype.forEach.call(root.querySelectorAll ? root.querySelectorAll('.jsx-figure') : [], autoMount);
+  }
+
+  // Thẻ được đổ vào trang sau khi script đã nạp (React, Vue, innerHTML): cũng tự vẽ.
+  function watchNewFigures() {
+    if (!window.MutationObserver || !document.documentElement) return;
+    new MutationObserver(function (records) {
+      records.forEach(function (record) { Array.prototype.forEach.call(record.addedNodes, autoMountWithin); });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   function boot() {
+    autoMountWithin(document.documentElement);
+    watchNewFigures();
+    // Thẻ không có dữ liệu nhúng nhưng có data-question-id: lấy từ API như trước.
     Array.prototype.forEach.call(document.querySelectorAll('div.jsx-figure[data-question-id]'), function (el) {
+      if (el._jsxFigureAuto) return;
       load(el, el.getAttribute('data-question-id'), el.getAttribute('data-section'));
     });
     var qid = script && script.getAttribute('data-question-id');
