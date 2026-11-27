@@ -1074,7 +1074,9 @@ var JsxFigureMechanicsLayout=(()=>{var W=Object.defineProperty;var ln=Object.get
       }
       // A mark being enlarged (grow > 1) also gets a bolder minimum stroke: a bigger square whose outline is still
       // hairline-thin still reads as faint. Ordinary outlines (grow stays 1, no symbol_vertex) keep their old thin floor.
-      var width = clamp(o.width_px * Math.sqrt(grow) * unit, o.symbol_vertex && !isTick ? 1.6 : 0.6, 4 * Math.sqrt(grow));
+      var isPlaneRightAngle = r.kind === 'plane_geometry' && o.symbol_kind === 'right';
+      var minStrokeWidth = o.symbol_vertex && !isTick ? (isPlaneRightAngle ? 0.9 : 1.6) : 0.6;
+      var width = clamp(o.width_px * Math.sqrt(grow) * unit, minStrokeWidth, 4 * Math.sqrt(grow));
       if (decoration) {
         board.create('curve', [cols(points, 0), cols(points, 1)], extend(FIXED, {
           strokeColor: '#fff', strokeWidth: width + 4, layer: 7,
